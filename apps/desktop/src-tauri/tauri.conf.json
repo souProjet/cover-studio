@@ -45,7 +45,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["ffmpeg"]
+        "depends": ["ffmpeg", "libasound2t64 | libasound2"]
       }
     }
   }

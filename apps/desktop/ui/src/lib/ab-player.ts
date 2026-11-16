@@ -1,12 +1,61 @@
 export type Side = "a" | "b";
 
+export interface PlayerState {
+  time: number;
+  playing: boolean;
+}
+
+/** A/B preview: "a" is the processed version, "b" the level-matched original. */
+export interface PreviewPlayer {
+  play(): Promise<PlayerState>;
+  pause(): Promise<PlayerState>;
+  seek(sec: number): Promise<PlayerState>;
+  setSide(side: Side): void;
+  state(): Promise<PlayerState>;
+  dispose(): void;
+}
+
+/** Playback in the Rust shell: the webview's media stack is unreliable on Linux. */
+export class NativePlayer implements PreviewPlayer {
+  private constructor(private invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) {}
+
+  static async load(projectId: string): Promise<NativePlayer> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("preview_load", { id: projectId });
+    return new NativePlayer(invoke);
+  }
+
+  private control(args: { playing?: boolean; seek?: number; original?: boolean }) {
+    return this.invoke<PlayerState>("preview_control", args);
+  }
+
+  play() {
+    return this.control({ playing: true });
+  }
+  pause() {
+    return this.control({ playing: false });
+  }
+  seek(sec: number) {
+    return this.control({ seek: sec });
+  }
+  setSide(side: Side) {
+    void this.control({ original: side === "b" });
+  }
+  state() {
+    return this.control({});
+  }
+  dispose() {
+    void this.invoke("preview_unload");
+  }
+}
+
 const FADE_SEC = 0.03;
 
 /**
- * Two decoded versions of the same audio started on one clock, so switching
+ * Browser fallback: two decoded versions started on one clock, so switching
  * between them is a short gain crossfade with no gap or drift.
  */
-export class AbPlayer {
+export class AbPlayer implements PreviewPlayer {
   private ctx: AudioContext;
   private buffers: [AudioBuffer, AudioBuffer];
   private gains: [GainNode, GainNode];
@@ -14,7 +63,6 @@ export class AbPlayer {
   private side: Side = "a";
   private startedAt = 0;
   private offset = 0;
-  onEnded: (() => void) | null = null;
 
   private constructor(ctx: AudioContext, buffers: [AudioBuffer, AudioBuffer]) {
     this.ctx = ctx;
@@ -35,21 +83,33 @@ export class AbPlayer {
     }
   }
 
-  get duration() {
+  private get duration() {
     return Math.min(this.buffers[0].duration, this.buffers[1].duration);
   }
 
-  get playing() {
+  private get playing() {
     return this.sources.length > 0;
   }
 
-  get time() {
+  private get time() {
     if (!this.playing) return this.offset;
     return Math.min(this.offset + this.ctx.currentTime - this.startedAt, this.duration);
   }
 
+  private snapshot(): PlayerState {
+    return { time: this.time, playing: this.playing };
+  }
+
+  async state() {
+    return this.snapshot();
+  }
+
   async play() {
-    if (this.playing) return;
+    if (!this.playing) await this.start();
+    return this.snapshot();
+  }
+
+  private async start() {
     await this.ctx.resume();
     if (this.offset >= this.duration - 0.01) this.offset = 0;
     const when = this.ctx.currentTime + 0.02;
@@ -64,22 +124,24 @@ export class AbPlayer {
     this.sources[0].onended = () => {
       if (!this.sources.length || this.time < this.duration - 0.05) return;
       this.stopSources();
-      this.offset = 0;
-      this.onEnded?.();
+      this.offset = this.duration;
     };
   }
 
-  pause() {
-    if (!this.playing) return;
-    this.offset = this.time;
-    this.stopSources();
+  async pause() {
+    if (this.playing) {
+      this.offset = this.time;
+      this.stopSources();
+    }
+    return this.snapshot();
   }
 
-  seek(sec: number) {
+  async seek(sec: number) {
     const resume = this.playing;
     this.stopSources();
     this.offset = Math.max(0, Math.min(sec, this.duration));
-    if (resume) void this.play();
+    if (resume) await this.start();
+    return this.snapshot();
   }
 
   setSide(side: Side) {

@@ -2,8 +2,8 @@
 
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AbPlayer } from "@/lib/ab-player";
-import { api, fileBytes, fileUrl } from "@/lib/api";
+import { AbPlayer, NativePlayer, type PreviewPlayer } from "@/lib/ab-player";
+import { api, fileBytes, fileUrl, inTauri } from "@/lib/api";
 import { type TKey, useI18n } from "@/lib/i18n";
 import type { Aspect, Project } from "@/lib/types";
 import { cn, errorMessage, fmtTime } from "@/lib/utils";
@@ -97,7 +97,8 @@ export function Preview({
 }) {
   const { t } = useI18n();
   const r = project.last_render;
-  const player = useRef<AbPlayer | null>(null);
+  const renderKey = r ? `${r.at}|${r.processed}` : null;
+  const player = useRef<PreviewPlayer | null>(null);
   const [ready, setReady] = useState(false);
   const [ab, setAb] = useState<"studio" | "original">("studio");
   const [playing, setPlaying] = useState(false);
@@ -112,16 +113,15 @@ export function Preview({
     setReady(false);
     if (!r) return;
     let live = true;
-    let loaded: AbPlayer | null = null;
-    Promise.all([fileBytes(r.processed, r.at), fileBytes(r.original, r.at)])
-      .then(([a, b]) => AbPlayer.load(a, b))
+    let loaded: PreviewPlayer | null = null;
+    const load = inTauri()
+      ? NativePlayer.load(project.id)
+      : Promise.all([fileBytes(r.processed, r.at), fileBytes(r.original, r.at)]).then(([a, b]) => AbPlayer.load(a, b));
+    load
       .then((p) => {
-        if (!live) return p.dispose();
+        // The native player is shared: a stale load must not unload the current one.
+        if (!live) return p instanceof NativePlayer ? undefined : p.dispose();
         loaded = player.current = p;
-        p.onEnded = () => {
-          setPlaying(false);
-          setTime(0);
-        };
         setReady(true);
       })
       .catch((e) => {
@@ -134,11 +134,16 @@ export function Preview({
       loaded?.dispose();
       if (player.current === loaded) player.current = null;
     };
-  }, [r]);
+  }, [renderKey, project.id]);
 
   useEffect(() => {
     player.current?.setSide(ab === "studio" ? "a" : "b");
   }, [ab, ready]);
+
+  function apply(s: { time: number; playing: boolean }) {
+    setTime(s.time);
+    setPlaying(s.playing);
+  }
 
   useEffect(() => {
     onPlayhead(r ? r.start_sec + time : null);
@@ -146,13 +151,16 @@ export function Preview({
 
   useEffect(() => {
     if (!playing) return;
-    let raf = 0;
-    const tick = () => {
-      if (player.current) setTime(player.current.time);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    const id = setInterval(() => {
+      player.current
+        ?.state()
+        .then((s) => {
+          setTime(s.time);
+          if (!s.playing) setPlaying(false);
+        })
+        .catch(() => {});
+    }, 50);
+    return () => clearInterval(id);
   }, [playing]);
 
   function toggle() {
@@ -161,16 +169,10 @@ export function Preview({
       if (r && !playError) setPlayError({ key: "preview.notReady" });
       return;
     }
-    if (p.playing) {
-      p.pause();
-      setTime(p.time);
-      setPlaying(false);
-      return;
-    }
-    p.play()
-      .then(() => {
+    (playing ? p.pause() : p.play())
+      .then((s) => {
         setPlayError(null);
-        setPlaying(true);
+        apply(s);
       })
       .catch((e) => setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
   }
@@ -179,8 +181,11 @@ export function Preview({
     if (!r || !wave.current) return;
     const rect = wave.current.getBoundingClientRect();
     const tt = ((e.clientX - rect.left) / rect.width) * (r.end_sec - r.start_sec);
-    player.current?.seek(tt);
     setTime(tt);
+    player.current
+      ?.seek(tt)
+      .then(apply)
+      .catch(() => {});
   }
 
   useEffect(() => {

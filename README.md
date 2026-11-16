@@ -138,7 +138,7 @@ Changing the mix only re-renders the mix. Changing the take or the separation mo
 Requirements: Rust (stable), Node 24 with pnpm, and ffmpeg. On Linux, you also need the WebKitGTK development packages:
 
 ```sh
-sudo apt install libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+sudo apt install libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libasound2-dev \
   libayatana-appindicator3-dev librsvg2-dev ffmpeg
 ```
 

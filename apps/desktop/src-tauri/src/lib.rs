@@ -1,11 +1,14 @@
 //! Tauri shell: exposes the engine as commands and relays progress events.
 
+mod preview_audio;
+
 use cover_engine::media::MediaInfo;
 use cover_engine::project::ExportRecord;
 use cover_engine::{
     Ctx, Engine, EngineError, Event, ExportRequest, Project, ProjectSummary, Settings, Sources,
     Stage, SystemInfo,
 };
+use preview_audio::{PreviewAudio, PreviewState};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,12 +19,38 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     engine: Arc<Engine>,
     jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    preview: Mutex<Option<Arc<PreviewAudio>>>,
+}
+
+impl AppState {
+    fn preview(&self) -> CmdResult<Arc<PreviewAudio>> {
+        let mut slot = self.preview.lock().unwrap();
+        if let Some(p) = slot.as_ref() {
+            return Ok(p.clone());
+        }
+        let p = Arc::new(PreviewAudio::open().map_err(CommandError::msg)?);
+        *slot = Some(p.clone());
+        Ok(p)
+    }
+
+    fn preview_opened(&self) -> Option<Arc<PreviewAudio>> {
+        self.preview.lock().unwrap().clone()
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct CommandError {
     message: String,
     cancelled: bool,
+}
+
+impl CommandError {
+    fn msg(message: String) -> Self {
+        CommandError {
+            message,
+            cancelled: false,
+        }
+    }
 }
 
 impl From<EngineError> for CommandError {
@@ -244,6 +273,54 @@ async fn install_gpu_runtime(app: AppHandle, job: String) -> CmdResult<PathBuf> 
     run_job(app, job, move |e, ctx| e.install_gpu_runtime(ctx)).await
 }
 
+/// Loads the last render of a project (processed and original) for A/B playback.
+#[tauri::command]
+async fn preview_load(state: State<'_, AppState>, id: String) -> CmdResult<PreviewState> {
+    let engine = state.engine.clone();
+    let player = state.preview()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = engine.load(&id)?;
+        let r = p
+            .last_render
+            .ok_or_else(|| EngineError::Invalid("no preview rendered yet".into()))?;
+        player
+            .load(&r.processed, &r.original)
+            .map_err(CommandError::msg)?;
+        Ok(player.state())
+    })
+    .await
+    .map_err(|e| CommandError::msg(e.to_string()))?
+}
+
+#[tauri::command]
+fn preview_unload(state: State<'_, AppState>) {
+    if let Some(p) = state.preview_opened() {
+        p.unload();
+    }
+}
+
+#[tauri::command]
+fn preview_control(
+    state: State<'_, AppState>,
+    playing: Option<bool>,
+    seek: Option<f64>,
+    original: Option<bool>,
+) -> CmdResult<PreviewState> {
+    let p = state.preview()?;
+    if let Some(o) = original {
+        p.set_original(o);
+    }
+    if let Some(s) = seek {
+        p.seek(s);
+    }
+    match playing {
+        Some(true) => p.play(),
+        Some(false) => p.pause(),
+        None => {}
+    }
+    Ok(p.state())
+}
+
 #[tauri::command]
 fn cancel_job(state: State<'_, AppState>, job: String) {
     if let Some(flag) = state.jobs.lock().unwrap().get(&job) {
@@ -286,6 +363,7 @@ pub fn run() {
             app.manage(AppState {
                 engine: Arc::new(engine),
                 jobs: Mutex::new(HashMap::new()),
+                preview: Mutex::new(None),
             });
             Ok(())
         })
@@ -307,6 +385,9 @@ pub fn run() {
             download_model,
             install_gpu_runtime,
             cancel_job,
+            preview_load,
+            preview_unload,
+            preview_control,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cover Studio");
