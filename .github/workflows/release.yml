@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # BtbN static build: a separate program shipped next to the app, with its licence.
+  FFMPEG_WINDOWS_ZIP: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip
+
+jobs:
+  cli:
+    name: CLI (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p cover-cli
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          dir="cover-studio-cli-$REF_NAME-$TARGET"
+          mkdir "$dir"
+          cp target/release/cover-studio target/release/libonnxruntime_providers_shared.so \
+             target/release/libonnxruntime_providers_cuda.so README.md LICENSE-MIT LICENSE-APACHE "$dir"/
+          tar czf "$dir.tar.gz" "$dir"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $dir = "cover-studio-cli-$env:REF_NAME-$env:TARGET"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item target/release/cover-studio.exe, target/release/onnxruntime_providers_shared.dll, `
+            target/release/onnxruntime_providers_cuda.dll, README.md, LICENSE-MIT, LICENSE-APACHE $dir
+          Compress-Archive $dir "$dir.zip"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          draft: true
+          files: cover-studio-cli-*.${{ matrix.archive }}
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            config: src-tauri/release/linux.conf.json
+          - os: windows-latest
+            config: src-tauri/release/windows.conf.json
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Bundled ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:FFMPEG_WINDOWS_ZIP -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dist
+          $root = Get-ChildItem ffmpeg-dist | Select-Object -First 1
+          $dest = "apps/desktop/src-tauri/ffmpeg"
+          New-Item -ItemType Directory $dest -Force | Out-Null
+          Copy-Item "$($root.FullName)/bin/ffmpeg.exe", "$($root.FullName)/bin/ffprobe.exe" $dest
+          Copy-Item "$($root.FullName)/LICENSE.txt" "$dest/LICENSE.txt"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: pnpm tauri
+          args: --config ${{ matrix.config }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: Cover Studio ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false

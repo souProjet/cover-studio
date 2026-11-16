@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.pnpm-store/
+
+# Tauri
+apps/desktop/src-tauri/gen/schemas/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/ffmpeg/
+
+# Models and media never belong in git
+*.onnx
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.mp4
+*.mov
+*.mkv
+/samples/
+/exports/
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+*.log

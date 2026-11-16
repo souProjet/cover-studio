@@ -1,0 +1,28 @@
+[package]
+name = "cover-ml"
+description = "ONNX Runtime inference for Cover Studio: source separation (MDX-Net) and pitch tracking (RMVPE)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["cuda"]
+cuda = ["ort/cuda"]
+
+[dependencies]
+cover-dsp.workspace = true
+ort.workspace = true
+realfft.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zip.workspace = true
+directories.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+cover-media.workspace = true

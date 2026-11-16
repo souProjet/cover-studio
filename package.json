@@ -1,0 +1,13 @@
+{
+  "name": "cover-studio",
+  "private": true,
+  "packageManager": "pnpm@12.21.0",
+  "scripts": {
+    "dev": "pnpm --filter @cover-studio/desktop tauri dev",
+    "build": "pnpm --filter @cover-studio/desktop tauri build",
+    "ui:dev": "pnpm --filter @cover-studio/ui dev",
+    "ui:build": "pnpm --filter @cover-studio/ui build",
+    "lint": "pnpm --filter @cover-studio/ui lint",
+    "typecheck": "pnpm --filter @cover-studio/ui typecheck"
+  }
+}

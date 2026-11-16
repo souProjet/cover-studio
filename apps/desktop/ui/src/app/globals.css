@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@theme {
+  --color-console: #1f2b30;
+  --color-panel: #26353b;
+  --color-raised: #2f4148;
+  --color-line: #3b5058;
+  --color-ink: #efe6d8;
+  --color-muted: #93a7aa;
+  --color-faint: #64797d;
+  --color-amber: #f2a541;
+  --color-amber-deep: #c97d1c;
+  --color-cyan: #7fb7be;
+  --color-tape: #e9dcc0;
+  --color-danger: #e0605a;
+  --color-ok: #8cc084;
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui;
+  --font-sans: var(--font-instrument), ui-sans-serif, system-ui;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  option {
+    background: var(--color-panel);
+    color: var(--color-ink);
+  }
+
+  html,
+  body {
+    background: var(--color-console);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  input,
+  textarea {
+    user-select: text;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-amber) 45%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-amber);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+/* Brushed-metal feel for the console panels, kept subtle. */
+.panel {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 40%),
+    var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+}
+
+/* Masking-tape labels used to mark takes on the session strip. */
+.tape {
+  background: var(--color-tape);
+  color: #3a3226;
+  font-family: var(--font-mono);
+  clip-path: polygon(2% 8%, 98% 0, 100% 92%, 1% 100%);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.25);
+}
+
+input[type="range"].fader {
+  appearance: none;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"].fader::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--color-amber) 0 var(--fill, 50%),
+    var(--color-line) var(--fill, 50%) 100%
+  );
+}
+input[type="range"].fader::-webkit-slider-thumb {
+  appearance: none;
+  margin-top: -8px;
+  width: 14px;
+  height: 20px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #f6efe3, #b9ad99);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.5),
+    inset 0 -6px 0 -5px #6b604f;
+}
+input[type="range"].fader::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line);
+}
+input[type="range"].fader::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-amber);
+}
+input[type="range"].fader::-moz-range-thumb {
+  width: 14px;
+  height: 20px;
+  border: 0;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #f6efe3, #b9ad99);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

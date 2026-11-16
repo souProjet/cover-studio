@@ -1,0 +1,16 @@
+[package]
+name = "cover-dsp"
+description = "Audio DSP building blocks for Cover Studio (filters, dynamics, loudness, STFT, pitch shifting, analysis)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+realfft.workspace = true
+rustfft.workspace = true
+ebur128.workspace = true
+signalsmith-stretch.workspace = true
+serde.workspace = true
+thiserror.workspace = true

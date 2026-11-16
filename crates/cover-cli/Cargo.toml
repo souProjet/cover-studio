@@ -1,0 +1,24 @@
+[package]
+name = "cover-cli"
+description = "Headless command line interface for Cover Studio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cover-studio"
+path = "src/main.rs"
+
+[features]
+default = ["cuda"]
+cuda = ["cover-engine/cuda"]
+
+[dependencies]
+cover-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

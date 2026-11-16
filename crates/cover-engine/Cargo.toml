@@ -1,0 +1,31 @@
+[package]
+name = "cover-engine"
+description = "Cover Studio processing pipeline: sync, take detection, separation, pitch correction, mixing, mastering and exports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["cuda"]
+cuda = ["cover-ml/cuda"]
+
+[dependencies]
+cover-dsp.workspace = true
+cover-media.workspace = true
+cover-ml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+directories.workspace = true
+image.workspace = true
+ab_glyph.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
