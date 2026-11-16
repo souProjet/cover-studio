@@ -30,6 +30,23 @@ export async function fileUrl(path: string): Promise<string> {
   return convertFileSrc(path);
 }
 
+/**
+ * URL an `<audio>` element can play. WebKitGTK hands media to GStreamer, which
+ * cannot read Tauri's `asset://` scheme, so on Linux the file is loaded into a
+ * blob URL instead. Release it with `releaseMediaUrl`.
+ */
+export async function mediaUrl(path: string, version: string): Promise<string> {
+  const url = await fileUrl(path);
+  if (!inTauri() || !navigator.userAgent.includes("Linux")) return `${url}?v=${encodeURIComponent(version)}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return URL.createObjectURL(await res.blob());
+}
+
+export function releaseMediaUrl(url: string) {
+  if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
 export function newJobId() {
   return Math.random().toString(36).slice(2, 10);
 }

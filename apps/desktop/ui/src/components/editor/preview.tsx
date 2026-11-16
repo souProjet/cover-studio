@@ -2,7 +2,7 @@
 
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, fileUrl } from "@/lib/api";
+import { api, fileUrl, mediaUrl, releaseMediaUrl } from "@/lib/api";
 import { type TKey, useI18n } from "@/lib/i18n";
 import type { Aspect, Project } from "@/lib/types";
 import { cn, errorMessage, fmtTime } from "@/lib/utils";
@@ -113,14 +113,23 @@ export function Preview({
   const wave = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!r) return setUrls(null);
-    const v = encodeURIComponent(r.at);
-    Promise.all([fileUrl(r.processed), fileUrl(r.original)])
-      .then(([a, b]) => setUrls([`${a}?v=${v}`, `${b}?v=${v}`]))
-      .catch((e) => setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
     setPlaying(false);
     setTime(0);
     setPlayError(null);
+    setUrls(null);
+    if (!r) return;
+    let live = true;
+    let loaded: [string, string] | null = null;
+    Promise.all([mediaUrl(r.processed, r.at), mediaUrl(r.original, r.at)])
+      .then((u) => {
+        if (live) setUrls((loaded = u));
+        else u.forEach(releaseMediaUrl);
+      })
+      .catch((e) => live && setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
+    return () => {
+      live = false;
+      loaded?.forEach(releaseMediaUrl);
+    };
   }, [r]);
 
   function mediaError(el: HTMLAudioElement) {
