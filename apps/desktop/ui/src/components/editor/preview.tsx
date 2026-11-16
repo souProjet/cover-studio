@@ -3,11 +3,18 @@
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fileUrl } from "@/lib/api";
-import { useI18n } from "@/lib/i18n";
+import { type TKey, useI18n } from "@/lib/i18n";
 import type { Aspect, Project } from "@/lib/types";
-import { cn, fmtTime } from "@/lib/utils";
+import { cn, errorMessage, fmtTime } from "@/lib/utils";
 import { Button } from "../ui";
 import { WaveCanvas } from "./wave-canvas";
+
+const MEDIA_ERRORS: Record<number, string> = {
+  1: "MEDIA_ERR_ABORTED",
+  2: "MEDIA_ERR_NETWORK",
+  3: "MEDIA_ERR_DECODE",
+  4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+};
 
 const ASPECT_RATIO: Record<Aspect, string | null> = {
   vertical: "9 / 16",
@@ -102,15 +109,28 @@ export function Preview({
   const [ab, setAb] = useState<"studio" | "original">("studio");
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
+  const [playError, setPlayError] = useState<{ key: TKey; detail?: string } | null>(null);
   const wave = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!r) return setUrls(null);
     const v = encodeURIComponent(r.at);
-    Promise.all([fileUrl(r.processed), fileUrl(r.original)]).then(([a, b]) => setUrls([`${a}?v=${v}`, `${b}?v=${v}`]));
+    Promise.all([fileUrl(r.processed), fileUrl(r.original)])
+      .then(([a, b]) => setUrls([`${a}?v=${v}`, `${b}?v=${v}`]))
+      .catch((e) => setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
     setPlaying(false);
     setTime(0);
+    setPlayError(null);
   }, [r]);
+
+  function mediaError(el: HTMLAudioElement) {
+    const err = el.error;
+    setPlaying(false);
+    setPlayError({
+      key: err?.code === 4 ? "preview.unsupported" : "preview.playFailed",
+      detail: err ? `${MEDIA_ERRORS[err.code] ?? err.code}${err.message ? `: ${err.message}` : ""}` : undefined,
+    });
+  }
 
   useEffect(() => {
     if (studio.current) studio.current.muted = ab !== "studio";
@@ -141,14 +161,29 @@ export function Preview({
   function toggle() {
     const a = studio.current;
     const b = original.current;
-    if (!a || !b) return;
+    if (!a || !b) {
+      if (r) setPlayError({ key: "preview.notReady" });
+      return;
+    }
     if (playing) {
       a.pause();
       b.pause();
       setPlaying(false);
     } else {
       b.currentTime = a.currentTime;
-      Promise.all([a.play(), b.play()]).then(() => setPlaying(true)).catch(() => setPlaying(false));
+      Promise.all([a.play(), b.play()])
+        .then(() => {
+          setPlayError(null);
+          setPlaying(true);
+        })
+        .catch((e) => {
+          a.pause();
+          b.pause();
+          setPlaying(false);
+          if (a.error) return mediaError(a);
+          if (b.error) return mediaError(b);
+          setPlayError({ key: "preview.playFailed", detail: errorMessage(e) });
+        });
     }
   }
 
@@ -191,8 +226,14 @@ export function Preview({
       <div className="panel p-4">
         {urls && (
           <>
-            <audio ref={studio} src={urls[0]} preload="auto" onEnded={() => setPlaying(false)} />
-            <audio ref={original} src={urls[1]} preload="auto" muted />
+            <audio
+              ref={studio}
+              src={urls[0]}
+              preload="auto"
+              onEnded={() => setPlaying(false)}
+              onError={(e) => mediaError(e.currentTarget)}
+            />
+            <audio ref={original} src={urls[1]} preload="auto" muted onError={(e) => mediaError(e.currentTarget)} />
           </>
         )}
         <div className="flex items-center gap-3">
@@ -246,6 +287,12 @@ export function Preview({
           </div>
         ) : (
           <p className="mt-3 text-sm text-muted">{t("preview.none")}</p>
+        )}
+        {playError && (
+          <p role="alert" className="mt-2 text-sm text-danger">
+            {t(playError.key)}
+            {playError.detail && <span className="ml-1 font-mono text-xs opacity-80">({playError.detail})</span>}
+          </p>
         )}
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-faint">
           {stale && r && <span className="text-amber">{t("preview.stale")}</span>}

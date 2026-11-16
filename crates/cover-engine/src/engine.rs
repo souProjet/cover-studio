@@ -193,7 +193,7 @@ impl Engine {
                 Err(e) => tracing::warn!("skipping {}: {e}", file.display()),
             }
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
         Ok(out)
     }
 

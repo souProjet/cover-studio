@@ -52,6 +52,10 @@ const fr = {
   "preview.notes": "notes corrigées",
   "preview.mean": "en moyenne",
   "preview.cents": "cents",
+  "preview.notReady": "L'aperçu se charge encore, réessaie dans un instant.",
+  "preview.playFailed": "Impossible de lire l'aperçu.",
+  "preview.unsupported":
+    "Le lecteur audio intégré ne sait pas lire ce fichier. Sous Linux, installe les plugins GStreamer : sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good",
 
   "tab.sound": "Son",
   "tab.tuning": "Justesse",
@@ -235,6 +239,10 @@ const en: Dict = {
   "preview.notes": "notes corrected",
   "preview.mean": "on average",
   "preview.cents": "cents",
+  "preview.notReady": "The preview is still loading, try again in a moment.",
+  "preview.playFailed": "Could not play the preview.",
+  "preview.unsupported":
+    "The built-in audio player cannot play this file. On Linux, install the GStreamer plugins: sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good",
 
   "tab.sound": "Sound",
   "tab.tuning": "Tuning",
