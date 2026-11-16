@@ -16,9 +16,14 @@ You recorded a cover with your phone, or with a microphone while your phone film
 the files and then:
 
 - **Separates voice and instrument** with MDX-Net (ONNX), so each part can be processed on its own.
-- **Tunes the voice gently**: it tracks the pitch with RMVPE, detects the key, and pulls each *note*
-  (not each sample) toward the scale. Vibrato and slides are kept, with a strength from "barely" to "polished".
-- **Mixes and masters**: vocal presence, air and de-essing; an EQ per instrument (acoustic, classical, electric,
+- **Tunes the voice gently**: it tracks the pitch with RMVPE, detects the key and the instrument's tuning
+  reference, and builds a smooth correction curve per *note*. Natural vibrato, deliberate slides and attacks are
+  kept, while off-pitch notes, slow drift, sagging note endings and overshoots are corrected (retune speed,
+  drift, vibrato calming), with formant preservation so the timbre stays yours.
+- **Cleans and polishes the voice**: light denoising, mouth-click and plosive repair, breath control,
+  a phrase leveler, a dynamic EQ for harshness (2–5 kHz) and mud (300 Hz), resonance suppression,
+  an adaptive de-esser and a short vocal plate.
+- **Mixes and masters**: vocal presence and air; an EQ per instrument (acoustic, classical, electric,
   piano, ukulele, band); glue compression, warmth and a small room. It normalises to the
   streaming loudness of your choice (−14 LUFS by default, true-peak limited).
   Only the *difference* between the processed and raw stems is added back to the original. Nothing
@@ -69,6 +74,7 @@ cover-studio process --video phone.mov --audio mic.wav --take 2 --aspect square 
 # Step by step on an existing project
 cover-studio projects
 cover-studio render <project> --preset polished --tuning 0.9
+cover-studio render <project> --retune-speed 0.2 --vibrato 0.5 --leveler 0.7 --breath 0.5 --vocal-reverb 0.1
 cover-studio export <project> --formats wav,flac --no-video
 
 cover-studio info      # toolchain, GPU and model status

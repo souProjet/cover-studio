@@ -120,14 +120,35 @@ export type VideoQuality = "draft" | "high" | "max";
 export type Language = "fr" | "en";
 export type AudioCodec = "aac" | "mp3" | "flac";
 
+export interface VocalSettings {
+  blend: number;
+  presence_db: number;
+  air_db: number;
+  de_ess: number;
+  compression: number;
+  leveler: number;
+  breath: number;
+  cleanup: number;
+  harshness: number;
+  reverb: number;
+}
+
 export interface Settings {
   separation_model: string;
   denoise_separation: boolean;
   device: Device;
   preset: SoundPreset;
   instrument: InstrumentKind;
-  tuning: { enabled: boolean; strength: number; drift: number; scale: ScaleMode };
-  vocal: { blend: number; presence_db: number; air_db: number; de_ess: boolean; compression: number };
+  tuning: {
+    enabled: boolean;
+    strength: number;
+    drift: number;
+    retune_speed: number;
+    vibrato: number;
+    preserve_formants: boolean;
+    scale: ScaleMode;
+  };
+  vocal: VocalSettings;
   instrument_blend: number;
   warmth_db: number;
   room: number;

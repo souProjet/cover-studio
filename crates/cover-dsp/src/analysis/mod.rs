@@ -4,6 +4,7 @@
 pub mod activity;
 pub mod key;
 pub mod onset;
+pub mod tuning_ref;
 pub mod xcorr;
 
 /// RMS envelope with non-overlapping windows of `hop` samples.

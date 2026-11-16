@@ -5,6 +5,25 @@ use signalsmith_stretch::Stretch;
 
 const BLOCK: usize = 256;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ShiftOptions {
+    /// Keeps the spectral envelope (vocal timbre) in place while the pitch
+    /// moves, so corrected notes do not sound thinner or darker.
+    pub preserve_formants: bool,
+    /// Above this frequency the shift becomes less tonal, which keeps
+    /// breathiness and consonants natural on voices.
+    pub tonality_limit_hz: Option<f32>,
+}
+
+impl ShiftOptions {
+    pub fn voice() -> Self {
+        Self {
+            preserve_formants: true,
+            tonality_limit_hz: Some(8000.0),
+        }
+    }
+}
+
 /// Shifts planar audio by a time-varying amount, keeping channels phase-coherent.
 ///
 /// `semitones_at(sample_index)` is queried once per block of 256 samples and
@@ -14,12 +33,30 @@ pub fn shift_varying_multi(
     sample_rate: u32,
     semitones_at: impl Fn(usize) -> f32,
 ) -> Vec<Vec<f32>> {
+    shift_varying_multi_with(channels, sample_rate, ShiftOptions::default(), semitones_at)
+}
+
+/// Like [`shift_varying_multi`], with formant and tonality options.
+pub fn shift_varying_multi_with(
+    channels: &[Vec<f32>],
+    sample_rate: u32,
+    opts: ShiftOptions,
+    semitones_at: impl Fn(usize) -> f32,
+) -> Vec<Vec<f32>> {
     let ch = channels.len();
     let n = channels.iter().map(Vec::len).min().unwrap_or(0);
     if ch == 0 || n == 0 {
         return channels.to_vec();
     }
     let mut st = Stretch::preset_default(ch as u32, sample_rate);
+    // The binding's `set_formant_base` actually sets a formant shift (and
+    // clears compensation), so the base frequency is left on auto-detect.
+    if opts.preserve_formants {
+        st.set_formant_factor(1.0, true);
+    }
+    let tonality = opts
+        .tonality_limit_hz
+        .map(|hz| (hz / sample_rate as f32).clamp(0.01, 0.5));
     let in_lat = st.input_latency();
     let latency = in_lat + st.output_latency();
 
@@ -36,7 +73,7 @@ pub fn shift_varying_multi(
             }
         }
         let center = pos.saturating_sub(in_lat).min(n - 1);
-        st.set_transpose_factor_semitones(semitones_at(center), None);
+        st.set_transpose_factor_semitones(semitones_at(center), tonality);
         st.process(&block_in[..len * ch], &mut block_out[..len * ch]);
         out.extend_from_slice(&block_out[..len * ch]);
         pos += len;
@@ -115,6 +152,86 @@ mod tests {
         let (lag, score) = crate::analysis::xcorr::best_lag(&ex, &ey, 100);
         assert!(lag.abs() <= 1, "lag {lag} blocks of 64 samples");
         assert!(score > 0.8, "{score}");
+    }
+
+    /// Sawtooth through two formant resonances: a crude sung vowel.
+    fn vowel(sr: u32, f0: f32) -> Vec<f32> {
+        use crate::filter::{Biquad, FilterKind};
+        let saw: Vec<f32> = (0..sr as usize * 2)
+            .map(|i| ((i as f32 * f0 / sr as f32) % 1.0) - 0.5)
+            .collect();
+        let mut a = saw.clone();
+        Biquad::new(
+            FilterKind::Bandpass {
+                freq: 700.0,
+                q: 2.0,
+            },
+            sr,
+        )
+        .process(&mut a);
+        let mut b = saw;
+        Biquad::new(
+            FilterKind::Bandpass {
+                freq: 2200.0,
+                q: 2.5,
+            },
+            sr,
+        )
+        .process(&mut b);
+        a.iter().zip(&b).map(|(p, q)| p + 0.5 * q).collect()
+    }
+
+    /// Long-term spectral envelope in dB, smoothed over ~270 Hz.
+    fn envelope(x: &[f32]) -> Vec<f32> {
+        let s = crate::stft::stft(x, 4096, 1024);
+        let mut avg = vec![0.0f64; s.bins];
+        for f in 4..s.frames - 4 {
+            for (b, c) in s.frame(f).iter().enumerate() {
+                avg[b] += c.norm_sqr() as f64;
+            }
+        }
+        (0..s.bins)
+            .map(|b| {
+                let (lo, hi) = (b.saturating_sub(25), (b + 26).min(s.bins));
+                let m = avg[lo..hi].iter().sum::<f64>() / (hi - lo) as f64;
+                (10.0 * (m + 1e-20).log10()) as f32
+            })
+            .collect()
+    }
+
+    /// RMS difference of the envelope shapes between 300 Hz and 4 kHz, in dB.
+    fn envelope_error(x: &[f32], y: &[f32], sr: u32) -> f32 {
+        let (ex, ey) = (envelope(x), envelope(y));
+        let bin = |hz: f32| (hz * 4096.0 / sr as f32) as usize;
+        let d: Vec<f32> = (bin(300.0)..bin(4000.0)).map(|b| ey[b] - ex[b]).collect();
+        let m = d.iter().sum::<f32>() / d.len() as f32;
+        (d.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / d.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn formants_stay_closer_when_preserved() {
+        let sr = 44_100u32;
+        for f0 in [110.0, 220.0] {
+            let x = vowel(sr, f0);
+            for semi in [-3.0, 3.0] {
+                let plain = shift_varying_multi(std::slice::from_ref(&x), sr, |_| semi)
+                    .pop()
+                    .unwrap();
+                let kept = shift_varying_multi_with(
+                    std::slice::from_ref(&x),
+                    sr,
+                    ShiftOptions::voice(),
+                    |_| semi,
+                )
+                .pop()
+                .unwrap();
+                let (ep, ek) = (
+                    envelope_error(&x, &plain, sr),
+                    envelope_error(&x, &kept, sr),
+                );
+                assert!(ek < 0.85 * ep, "f0 {f0} shift {semi}: {ep} dB -> {ek} dB");
+            }
+        }
     }
 
     #[test]

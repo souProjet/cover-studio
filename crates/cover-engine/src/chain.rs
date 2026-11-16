@@ -2,9 +2,14 @@
 
 use crate::settings::{InstrumentKind, VocalSettings};
 use cover_dsp::analysis::rms_envelope;
-use cover_dsp::dynamics::{compress, de_ess, CompressorSettings, DeEsserSettings};
+use cover_dsp::dynamics::{compress, CompressorSettings};
 use cover_dsp::filter::{Biquad, FilterKind};
+use cover_dsp::spectral::{spectral_clean, SpectralCleanSettings};
 use cover_dsp::util::{gain_to_db, percentile, rms};
+use cover_dsp::vocal::{
+    breath_control, de_ess_adaptive, declick, dynamic_eq, level_ride, Voicing, VOCAL_DYNAMIC_BANDS,
+};
+use serde::{Deserialize, Serialize};
 
 fn eq(channels: &mut [Vec<f32>], sr: u32, chain: &[FilterKind]) {
     for ch in channels.iter_mut() {
@@ -42,10 +47,44 @@ fn match_level(processed: &mut [Vec<f32>], reference: &[Vec<f32>]) {
     }
 }
 
-/// EQ, de-essing and compression for a (possibly pitch-corrected) vocal stem.
+/// What the automatic vocal clean-up found and did, for the render log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct VocalReport {
+    pub snr_db: f32,
+    pub denoised: bool,
+    pub clicks: usize,
+    pub breaths: usize,
+    pub leveler_min_db: f32,
+    pub leveler_max_db: f32,
+    pub sibilance_hz: f32,
+}
+
+/// Clean-up, levelling, EQ, de-essing and compression for a (possibly
+/// pitch-corrected) vocal stem. `voicing` comes from the pitch track and
+/// lets breath control and the leveler tell singing from breaths and noise.
 /// Output level matches the input so blends do not change the balance.
-pub fn process_vocal(input: &[Vec<f32>], sr: u32, s: &VocalSettings) -> Vec<Vec<f32>> {
-    let mut out = input.to_vec();
+pub fn process_vocal(
+    input: &[Vec<f32>],
+    sr: u32,
+    s: &VocalSettings,
+    voicing: Option<&Voicing>,
+) -> (Vec<Vec<f32>>, VocalReport) {
+    let mut report = VocalReport::default();
+    let (mut out, spec) = spectral_clean(
+        input,
+        sr,
+        &SpectralCleanSettings {
+            denoise: s.cleanup,
+            resonance: s.harshness,
+        },
+    );
+    report.snr_db = spec.snr_db;
+    report.denoised = spec.denoised;
+    report.clicks = declick(&mut out, sr, s.cleanup);
+    if let Some(v) = voicing {
+        report.breaths = breath_control(&mut out, sr, s.breath, v);
+    }
+    (report.leveler_min_db, report.leveler_max_db) = level_ride(&mut out, sr, s.leveler, voicing);
     eq(
         &mut out,
         sr,
@@ -71,19 +110,8 @@ pub fn process_vocal(input: &[Vec<f32>], sr: u32, s: &VocalSettings) -> Vec<Vec<
             },
         ],
     );
-    if s.de_ess {
-        for c in out.iter_mut() {
-            let level = gain_to_db(rms(c).max(1e-6));
-            de_ess(
-                c,
-                sr,
-                &DeEsserSettings {
-                    threshold_db: level - 4.0,
-                    ..DeEsserSettings::default()
-                },
-            );
-        }
-    }
+    dynamic_eq(&mut out, sr, &VOCAL_DYNAMIC_BANDS, s.harshness);
+    report.sibilance_hz = de_ess_adaptive(&mut out, sr, s.de_ess);
     let amount = s.compression.clamp(0.0, 1.0);
     if amount > 0.01 {
         let level = active_level_db(&out, sr);
@@ -101,7 +129,7 @@ pub fn process_vocal(input: &[Vec<f32>], sr: u32, s: &VocalSettings) -> Vec<Vec<
         );
     }
     match_level(&mut out, input);
-    out
+    (out, report)
 }
 
 fn instrument_eq(kind: InstrumentKind) -> Vec<FilterKind> {

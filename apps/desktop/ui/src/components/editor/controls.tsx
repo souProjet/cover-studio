@@ -4,42 +4,69 @@ import { Check, Copy, Crosshair } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import type { InstrumentKind, Mode, Project, RenderInfo, Settings, SoundPreset } from "@/lib/types";
+import type { InstrumentKind, Mode, Project, RenderInfo, Settings, SoundPreset, VocalSettings } from "@/lib/types";
 import { cn, fmtTime, keyName, noteName } from "@/lib/utils";
 import { Button, Fader, Label, SectionTitle, Segmented, Select, Switch, TextInput } from "../ui";
 
 type Tab = "sound" | "tuning" | "video" | "post" | "advanced";
 
-const PRESETS: Record<SoundPreset, Partial<Settings>> = {
+const PRESET_VOCAL: Record<SoundPreset, VocalSettings> = {
   natural: {
-    vocal: { blend: 0.5, presence_db: 0.8, air_db: 0.5, de_ess: true, compression: 0.3 },
-    instrument_blend: 0.4,
-    warmth_db: 0.6,
-    room: 0.15,
+    blend: 0.6,
+    presence_db: 0.8,
+    air_db: 0.5,
+    de_ess: 0.4,
+    compression: 0.3,
+    leveler: 0.35,
+    breath: 0.25,
+    cleanup: 0.3,
+    harshness: 0.3,
+    reverb: 0.1,
   },
   balanced: {
-    vocal: { blend: 0.75, presence_db: 1.5, air_db: 1, de_ess: true, compression: 0.5 },
-    instrument_blend: 0.6,
-    warmth_db: 0.8,
-    room: 0.25,
+    blend: 0.8,
+    presence_db: 1.5,
+    air_db: 1,
+    de_ess: 0.55,
+    compression: 0.5,
+    leveler: 0.55,
+    breath: 0.4,
+    cleanup: 0.45,
+    harshness: 0.5,
+    reverb: 0.18,
   },
   polished: {
-    vocal: { blend: 0.9, presence_db: 2.5, air_db: 1.8, de_ess: true, compression: 0.7 },
-    instrument_blend: 0.65,
-    warmth_db: 0.7,
-    room: 0.3,
+    blend: 0.95,
+    presence_db: 2.3,
+    air_db: 1.6,
+    de_ess: 0.7,
+    compression: 0.65,
+    leveler: 0.75,
+    breath: 0.55,
+    cleanup: 0.6,
+    harshness: 0.65,
+    reverb: 0.26,
   },
 };
-const PRESET_TUNING: Record<SoundPreset, [number, number]> = {
-  natural: [0.55, 0],
-  balanced: [0.8, 0.2],
-  polished: [0.95, 0.45],
+// [strength, retune speed, drift, vibrato], instrument blend, warmth, room
+const PRESET_REST: Record<SoundPreset, [[number, number, number, number], number, number, number]> = {
+  natural: [[0.6, 0.15, 0.15, 0], 0.4, 0.6, 0.15],
+  balanced: [[0.85, 0.35, 0.35, 0.2], 0.6, 0.8, 0.22],
+  polished: [[0.95, 0.6, 0.6, 0.4], 0.65, 0.7, 0.25],
 };
 
 /** Mirrors `Settings::apply_preset` in the engine. */
 function applyPreset(s: Settings, p: SoundPreset): Settings {
-  const [strength, drift] = PRESET_TUNING[p];
-  return { ...s, ...PRESETS[p], preset: p, tuning: { ...s.tuning, strength, drift } };
+  const [[strength, retune_speed, drift, vibrato], instrument_blend, warmth_db, room] = PRESET_REST[p];
+  return {
+    ...s,
+    preset: p,
+    vocal: { ...PRESET_VOCAL[p] },
+    tuning: { ...s.tuning, strength, retune_speed, drift, vibrato },
+    instrument_blend,
+    warmth_db,
+    room,
+  };
 }
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -220,8 +247,11 @@ export function Controls({
               <Fader label={t("sound.voiceAmount")} value={s.vocal.blend} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, blend: v })} />
               <Fader label={t("sound.presence")} value={s.vocal.presence_db} min={-3} max={5} step={0.1} format={db} onChange={(v) => set("vocal", { ...s.vocal, presence_db: v })} />
               <Fader label={t("sound.air")} value={s.vocal.air_db} min={-3} max={4} step={0.1} format={db} onChange={(v) => set("vocal", { ...s.vocal, air_db: v })} />
+              <Fader label={t("sound.leveler")} value={s.vocal.leveler} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, leveler: v })} />
               <Fader label={t("sound.compression")} value={s.vocal.compression} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, compression: v })} />
-              <Switch label={t("sound.deess")} checked={s.vocal.de_ess} onChange={(v) => set("vocal", { ...s.vocal, de_ess: v })} />
+              <Fader label={t("sound.deess")} value={s.vocal.de_ess} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, de_ess: v })} />
+              <Fader label={t("sound.breath")} value={s.vocal.breath} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, breath: v })} />
+              <Fader label={t("sound.vocalReverb")} value={s.vocal.reverb} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, reverb: v })} />
             </div>
             <div className="grid gap-4">
               <SectionTitle>{t("sound.mix")}</SectionTitle>
@@ -246,7 +276,12 @@ export function Controls({
           <div className="grid gap-5">
             <Switch label={t("tuning.enabled")} checked={s.tuning.enabled} onChange={(v) => set("tuning", { ...s.tuning, enabled: v })} />
             <Fader label={t("tuning.strength")} value={s.tuning.strength} min={0} max={1} format={pct} disabled={!s.tuning.enabled} onChange={(v) => set("tuning", { ...s.tuning, strength: v })} />
+            <div className="grid gap-1">
+              <Fader label={t("tuning.retune")} value={s.tuning.retune_speed} min={0} max={1} format={pct} disabled={!s.tuning.enabled} onChange={(v) => set("tuning", { ...s.tuning, retune_speed: v })} />
+              <p className="text-xs text-faint">{t("tuning.retuneHint")}</p>
+            </div>
             <Fader label={t("tuning.drift")} value={s.tuning.drift} min={0} max={1} format={pct} disabled={!s.tuning.enabled} onChange={(v) => set("tuning", { ...s.tuning, drift: v })} />
+            <Fader label={t("tuning.vibrato")} value={s.tuning.vibrato} min={0} max={1} format={pct} disabled={!s.tuning.enabled} onChange={(v) => set("tuning", { ...s.tuning, vibrato: v })} />
             <div className="grid gap-2">
               <SectionTitle>{t("tuning.scale")}</SectionTitle>
               <Segmented
@@ -390,6 +425,12 @@ export function Controls({
               options={(["auto", "cuda", "cpu"] as const).map((d) => ({ value: d, label: t(`device.${d}`) }))}
             />
             <p className="text-xs text-faint">{t("adv.reanalyzeHint")}</p>
+            <div className="grid gap-4">
+              <SectionTitle>{t("adv.voice")}</SectionTitle>
+              <Fader label={t("adv.cleanup")} value={s.vocal.cleanup} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, cleanup: v })} />
+              <Fader label={t("adv.harshness")} value={s.vocal.harshness} min={0} max={1} format={pct} onChange={(v) => set("vocal", { ...s.vocal, harshness: v })} />
+              <Switch label={t("adv.formants")} checked={s.tuning.preserve_formants} onChange={(v) => set("tuning", { ...s.tuning, preserve_formants: v })} />
+            </div>
           </div>
         )}
       </div>

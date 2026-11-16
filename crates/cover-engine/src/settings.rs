@@ -5,7 +5,7 @@ use crate::analysis::tuning::TuningParams;
 use cover_dsp::analysis::key::Mode;
 use cover_media::{Aspect, VideoQuality, VideoStyle};
 use cover_ml::Device;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,11 +43,53 @@ pub enum ScaleMode {
     },
 }
 
+/// Values for fields added after the first release, so older projects load
+/// with the balanced preset's behaviour.
+mod defaults {
+    pub fn retune_speed() -> f32 {
+        0.35
+    }
+    pub fn vibrato() -> f32 {
+        0.2
+    }
+    pub fn yes() -> bool {
+        true
+    }
+    pub const DE_ESS: f32 = 0.55;
+    pub fn leveler() -> f32 {
+        0.55
+    }
+    pub fn breath() -> f32 {
+        0.4
+    }
+    pub fn cleanup() -> f32 {
+        0.45
+    }
+    pub fn harshness() -> f32 {
+        0.5
+    }
+    pub fn reverb() -> f32 {
+        0.18
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TuningSettings {
     pub enabled: bool,
+    /// 0..1 share of each note's pitch error that gets corrected.
     pub strength: f32,
+    /// 0..1, steadies slow drift inside held notes.
     pub drift: f32,
+    /// 0 (natural) .. 1 (tight): how much attacks and small scoops are
+    /// pulled onto the note.
+    #[serde(default = "defaults::retune_speed")]
+    pub retune_speed: f32,
+    /// 0..1, calms vibrato that is wider than normal (normal vibrato is kept).
+    #[serde(default = "defaults::vibrato")]
+    pub vibrato: f32,
+    /// Keeps the vocal timbre while the pitch moves.
+    #[serde(default = "defaults::yes")]
+    pub preserve_formants: bool,
     pub scale: ScaleMode,
 }
 
@@ -55,21 +97,56 @@ impl TuningSettings {
     pub fn params(&self) -> TuningParams {
         TuningParams {
             strength: self.strength.clamp(0.0, 1.0),
+            retune_speed: self.retune_speed.clamp(0.0, 1.0),
             drift: self.drift.clamp(0.0, 1.0),
+            vibrato: self.vibrato.clamp(0.0, 1.0),
             ..TuningParams::default()
         }
     }
 }
 
+/// Accepts the 0..1 amount, or the on/off flag older projects stored.
+fn amount_or_flag<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<f32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value {
+        Flag(bool),
+        Amount(f32),
+    }
+    Ok(match Value::deserialize(d)? {
+        Value::Flag(true) => defaults::DE_ESS,
+        Value::Flag(false) => 0.0,
+        Value::Amount(v) => v,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct VocalSettings {
-    /// 0..1, how much of the processed vocal replaces the raw one.
+    /// 0..1, how much of the processed (EQ, dynamics, clean-up) vocal
+    /// replaces the raw one. Pitch correction is always applied in full.
     pub blend: f32,
     pub presence_db: f32,
     pub air_db: f32,
-    pub de_ess: bool,
+    /// 0..1 de-essing amount.
+    #[serde(deserialize_with = "amount_or_flag")]
+    pub de_ess: f32,
     /// 0..1 compression amount.
     pub compression: f32,
+    /// 0..1, evens out quiet and loud phrases before the compressor.
+    #[serde(default = "defaults::leveler")]
+    pub leveler: f32,
+    /// 0..1, lowers breaths between phrases.
+    #[serde(default = "defaults::breath")]
+    pub breath: f32,
+    /// 0..1 noise, mouth-click and plosive clean-up.
+    #[serde(default = "defaults::cleanup")]
+    pub cleanup: f32,
+    /// 0..1 dynamic control of harsh, boomy and resonant moments.
+    #[serde(default = "defaults::harshness")]
+    pub harshness: f32,
+    /// 0..1 vocal plate reverb.
+    #[serde(default = "defaults::reverb")]
+    pub reverb: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -146,20 +223,17 @@ impl Default for Settings {
             instrument: InstrumentKind::AcousticGuitar,
             tuning: TuningSettings {
                 enabled: true,
-                strength: 0.8,
-                drift: 0.2,
+                strength: 0.85,
+                drift: 0.35,
+                retune_speed: defaults::retune_speed(),
+                vibrato: defaults::vibrato(),
+                preserve_formants: true,
                 scale: ScaleMode::Auto,
             },
-            vocal: VocalSettings {
-                blend: 0.75,
-                presence_db: 1.5,
-                air_db: 1.0,
-                de_ess: true,
-                compression: 0.5,
-            },
+            vocal: VocalSettings::preset(SoundPreset::Balanced),
             instrument_blend: 0.6,
             warmth_db: 0.8,
-            room: 0.25,
+            room: 0.22,
             loudness: LoudnessTarget {
                 lufs: -14.0,
                 ceiling_dbtp: -1.0,
@@ -186,53 +260,109 @@ impl Default for Settings {
     }
 }
 
+impl VocalSettings {
+    pub fn preset(preset: SoundPreset) -> Self {
+        match preset {
+            SoundPreset::Natural => VocalSettings {
+                blend: 0.6,
+                presence_db: 0.8,
+                air_db: 0.5,
+                de_ess: 0.4,
+                compression: 0.3,
+                leveler: 0.35,
+                breath: 0.25,
+                cleanup: 0.3,
+                harshness: 0.3,
+                reverb: 0.1,
+            },
+            SoundPreset::Balanced => VocalSettings {
+                blend: 0.8,
+                presence_db: 1.5,
+                air_db: 1.0,
+                de_ess: defaults::DE_ESS,
+                compression: 0.5,
+                leveler: defaults::leveler(),
+                breath: defaults::breath(),
+                cleanup: defaults::cleanup(),
+                harshness: defaults::harshness(),
+                reverb: defaults::reverb(),
+            },
+            SoundPreset::Polished => VocalSettings {
+                blend: 0.95,
+                presence_db: 2.3,
+                air_db: 1.6,
+                de_ess: 0.7,
+                compression: 0.65,
+                leveler: 0.75,
+                breath: 0.55,
+                cleanup: 0.6,
+                harshness: 0.65,
+                reverb: 0.26,
+            },
+        }
+    }
+}
+
 impl Settings {
     /// Overwrites the sound-shaping fields with the preset's values.
     pub fn apply_preset(&mut self, preset: SoundPreset) {
         self.preset = preset;
-        match preset {
-            SoundPreset::Natural => {
-                self.tuning.strength = 0.55;
-                self.tuning.drift = 0.0;
-                self.vocal = VocalSettings {
-                    blend: 0.5,
-                    presence_db: 0.8,
-                    air_db: 0.5,
-                    de_ess: true,
-                    compression: 0.3,
-                };
-                self.instrument_blend = 0.4;
-                self.warmth_db = 0.6;
-                self.room = 0.15;
+        self.vocal = VocalSettings::preset(preset);
+        // (strength, retune speed, drift, vibrato), instrument blend, warmth, room
+        let ((strength, retune_speed, drift, vibrato), instrument_blend, warmth_db, room) =
+            match preset {
+                SoundPreset::Natural => ((0.6, 0.15, 0.15, 0.0), 0.4, 0.6, 0.15),
+                SoundPreset::Balanced => ((0.85, 0.35, 0.35, 0.2), 0.6, 0.8, 0.22),
+                SoundPreset::Polished => ((0.95, 0.6, 0.6, 0.4), 0.65, 0.7, 0.25),
+            };
+        self.tuning.strength = strength;
+        self.tuning.retune_speed = retune_speed;
+        self.tuning.drift = drift;
+        self.tuning.vibrato = vibrato;
+        self.instrument_blend = instrument_blend;
+        self.warmth_db = warmth_db;
+        self.room = room;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_projects_load_with_new_defaults() {
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        let vocal = v["vocal"].as_object_mut().unwrap();
+        for k in ["leveler", "breath", "cleanup", "harshness", "reverb"] {
+            vocal.remove(k);
+        }
+        vocal.insert("de_ess".into(), serde_json::Value::Bool(true));
+        let tuning = v["tuning"].as_object_mut().unwrap();
+        for k in ["retune_speed", "vibrato", "preserve_formants"] {
+            tuning.remove(k);
+        }
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn presets_get_progressively_stronger() {
+        let mut s = Settings::default();
+        let mut prev: Option<Settings> = None;
+        for p in [
+            SoundPreset::Natural,
+            SoundPreset::Balanced,
+            SoundPreset::Polished,
+        ] {
+            s.apply_preset(p);
+            if let Some(q) = &prev {
+                assert!(s.tuning.strength > q.tuning.strength);
+                assert!(s.tuning.retune_speed > q.tuning.retune_speed);
+                assert!(s.vocal.leveler > q.vocal.leveler);
+                assert!(s.vocal.de_ess > q.vocal.de_ess);
+                assert!(s.vocal.cleanup > q.vocal.cleanup);
             }
-            SoundPreset::Balanced => {
-                self.tuning.strength = 0.8;
-                self.tuning.drift = 0.2;
-                self.vocal = VocalSettings {
-                    blend: 0.75,
-                    presence_db: 1.5,
-                    air_db: 1.0,
-                    de_ess: true,
-                    compression: 0.5,
-                };
-                self.instrument_blend = 0.6;
-                self.warmth_db = 0.8;
-                self.room = 0.25;
-            }
-            SoundPreset::Polished => {
-                self.tuning.strength = 0.95;
-                self.tuning.drift = 0.45;
-                self.vocal = VocalSettings {
-                    blend: 0.9,
-                    presence_db: 2.5,
-                    air_db: 1.8,
-                    de_ess: true,
-                    compression: 0.7,
-                };
-                self.instrument_blend = 0.65;
-                self.warmth_db = 0.7;
-                self.room = 0.3;
-            }
+            prev = Some(s.clone());
         }
     }
 }

@@ -81,6 +81,41 @@ pub fn room(x: &[f32], sample_rate: u32, room_size: f32, damping: f32) -> [Vec<f
     out
 }
 
+/// Wet-only vocal plate: 30 ms pre-delay, a band-limited send (no mud, no
+/// sibilance splash) and a ~1.6 s tail. The wet RMS is `level` times the
+/// RMS of `x`.
+pub fn vocal_plate(x: &[f32], sample_rate: u32, level: f32) -> [Vec<f32>; 2] {
+    use crate::filter::{Biquad, FilterKind};
+    let n = x.len();
+    let pre = (0.03 * sample_rate as f32) as usize;
+    let mut send = vec![0.0f32; n];
+    if n > pre {
+        send[pre..].copy_from_slice(&x[..n - pre]);
+    }
+    for k in [
+        FilterKind::Highpass {
+            freq: 300.0,
+            q: 0.707,
+        },
+        FilterKind::Lowpass {
+            freq: 6500.0,
+            q: 0.707,
+        },
+    ] {
+        Biquad::new(k, sample_rate).process(&mut send);
+    }
+    let mut wet = room(&send, sample_rate, 0.82, 0.35);
+    let rd = crate::util::rms(x);
+    let rw = 0.5 * (crate::util::rms(&wet[0]) + crate::util::rms(&wet[1]));
+    if rw > 1e-9 {
+        let g = level.max(0.0) * rd / rw;
+        for w in wet.iter_mut() {
+            w.iter_mut().for_each(|s| *s *= g);
+        }
+    }
+    wet
+}
+
 /// Parallel room on a stereo signal: `dry * (1 - mix) + wet * mix`.
 pub fn parallel_room(
     channels: &mut [Vec<f32>],

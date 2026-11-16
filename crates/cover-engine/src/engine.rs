@@ -93,6 +93,10 @@ fn stems_fingerprint(sources: &Sources, settings: &Settings) -> String {
     hash_hex(h)
 }
 
+/// Bump whenever the processing changes what a render sounds like, so that
+/// renders cached by an older engine are not reused.
+const RENDER_REVISION: u32 = 2;
+
 /// Identifies everything the rendered master depends on.
 fn render_fingerprint(project: &Project, range: (f64, f64)) -> String {
     let mut s = project.settings.clone();
@@ -100,6 +104,7 @@ fn render_fingerprint(project: &Project, range: (f64, f64)) -> String {
     s.social = Settings::default().social;
     s.sync_offset_sec = None;
     let mut h = Sha256::new();
+    h.update(RENDER_REVISION.to_le_bytes());
     h.update(serde_json::to_vec(&s).unwrap_or_default());
     h.update(range.0.to_le_bytes());
     h.update(range.1.to_le_bytes());
@@ -109,8 +114,13 @@ fn render_fingerprint(project: &Project, range: (f64, f64)) -> String {
     hash_hex(h)
 }
 
+/// Below this the detected key is a guess, and snapping to its scale could
+/// pull notes onto the wrong neighbour; the semitone grid is safer.
+const MIN_KEY_CONFIDENCE: f32 = 0.55;
+
 pub fn scale_for(mode: ScaleMode, key: &Key) -> Scale {
     match mode {
+        ScaleMode::Auto if key.confidence < MIN_KEY_CONFIDENCE => Scale::chromatic(),
         ScaleMode::Auto => Scale::from_key(key),
         ScaleMode::Chromatic => Scale::chromatic(),
         ScaleMode::Manual { tonic, mode } => Scale::from_key(&Key {
@@ -566,6 +576,21 @@ impl Engine {
             out.stats.loudness.integrated_lufs,
             out.stats.notes_corrected,
             out.stats.mean_correction_cents
+        ));
+        if let Some(c) = out.reference_cents {
+            ctx.log(format!("Tuning reference {c:+.1} cents from A440"));
+        }
+        let v = out.vocal;
+        ctx.log(format!(
+            "Voice: levelling {:+.1}..{:+.1} dB, {} breath(s) lowered, {} click(s) repaired, \
+             sibilance at {:.0} Hz, noise floor {:.0} dB below{}",
+            v.leveler_min_db,
+            v.leveler_max_db,
+            v.breaths,
+            v.clicks,
+            v.sibilance_hz,
+            v.snr_db,
+            if v.denoised { " (denoised)" } else { "" }
         ));
 
         p.last_render = Some(RenderInfo {

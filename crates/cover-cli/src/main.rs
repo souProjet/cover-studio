@@ -138,9 +138,39 @@ struct SettingsArgs {
     /// Pitch correction strength 0..1 (0 disables tuning).
     #[arg(long)]
     tuning: Option<f32>,
+    /// Retune speed 0..1: 0 keeps attacks and scoops natural, 1 is tight.
+    #[arg(long)]
+    retune_speed: Option<f32>,
+    /// Steady slow drift inside held notes, 0..1.
+    #[arg(long)]
+    drift: Option<f32>,
+    /// Calm vibrato wider than normal, 0..1 (normal vibrato is kept).
+    #[arg(long)]
+    vibrato: Option<f32>,
+    /// Shift the pitch without keeping the vocal timbre (formants).
+    #[arg(long)]
+    no_formants: bool,
     /// Snap to semitones instead of the detected key.
     #[arg(long)]
     chromatic: bool,
+    /// Even out quiet and loud vocal phrases, 0..1.
+    #[arg(long)]
+    leveler: Option<f32>,
+    /// Lower breaths between phrases, 0..1.
+    #[arg(long)]
+    breath: Option<f32>,
+    /// De-essing amount, 0..1.
+    #[arg(long)]
+    de_ess: Option<f32>,
+    /// Vocal noise, mouth-click and plosive clean-up, 0..1.
+    #[arg(long)]
+    cleanup: Option<f32>,
+    /// Tame harsh, boomy and resonant moments, 0..1.
+    #[arg(long)]
+    harshness: Option<f32>,
+    /// Vocal plate reverb, 0..1.
+    #[arg(long)]
+    vocal_reverb: Option<f32>,
     /// Take number to export (default: best detected take).
     #[arg(long)]
     take: Option<usize>,
@@ -212,8 +242,33 @@ impl SettingsArgs {
             s.tuning.enabled = v > 0.0;
             s.tuning.strength = v.clamp(0.0, 1.0);
         }
+        let unit = |v: f32| v.clamp(0.0, 1.0);
+        if let Some(v) = self.retune_speed {
+            s.tuning.retune_speed = unit(v);
+        }
+        if let Some(v) = self.drift {
+            s.tuning.drift = unit(v);
+        }
+        if let Some(v) = self.vibrato {
+            s.tuning.vibrato = unit(v);
+        }
+        if self.no_formants {
+            s.tuning.preserve_formants = false;
+        }
         if self.chromatic {
             s.tuning.scale = ScaleMode::Chromatic;
+        }
+        for (arg, field) in [
+            (self.leveler, &mut s.vocal.leveler),
+            (self.breath, &mut s.vocal.breath),
+            (self.de_ess, &mut s.vocal.de_ess),
+            (self.cleanup, &mut s.vocal.cleanup),
+            (self.harshness, &mut s.vocal.harshness),
+            (self.vocal_reverb, &mut s.vocal.reverb),
+        ] {
+            if let Some(v) = arg {
+                *field = unit(v);
+            }
         }
         if self.take.is_some() {
             s.range.take = self.take.map(|t| t.saturating_sub(1));

@@ -12,8 +12,10 @@ pub mod mel;
 pub mod pitch_shift;
 pub mod resample;
 pub mod reverb;
+pub mod spectral;
 pub mod stft;
 pub mod util;
+pub mod vocal;
 
 pub use buffer::AudioBuffer;
 
