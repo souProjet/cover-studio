@@ -3,9 +3,9 @@
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AbPlayer, NativePlayer, type PreviewPlayer } from "@/lib/ab-player";
-import { api, fileBytes, fileUrl, inTauri } from "@/lib/api";
+import { api, fileBlobUrl, fileBytes, fileUrl, inTauri } from "@/lib/api";
 import { type TKey, useI18n } from "@/lib/i18n";
-import type { Aspect, Project } from "@/lib/types";
+import type { Aspect, HdrTransfer, Project, VideoStyle } from "@/lib/types";
 import { cn, errorMessage, fmtTime } from "@/lib/utils";
 import { Button } from "../ui";
 import { WaveCanvas } from "./wave-canvas";
@@ -17,69 +17,200 @@ const ASPECT_RATIO: Record<Aspect, string | null> = {
   source: null,
 };
 
+/** CSS grades approximating the export `grading()` filter chain. */
+const STYLE_FILTER: Record<VideoStyle, string> = {
+  natural: "none",
+  social: "contrast(1.04) brightness(1.02) saturate(1.05)",
+  low_light: "contrast(1.05) brightness(1.03) saturate(1.04)",
+};
+
+function hdrLabel(hdr: HdrTransfer | null | undefined, t: (k: TKey) => string) {
+  if (hdr === "pq") return t("video.hdrPq");
+  if (hdr === "hlg") return t("video.hdrHlg");
+  return t("video.sdr");
+}
+
 /** Video picture following the audio clock, framed like the export. */
-function Picture({ project, absTime, playing }: { project: Project; absTime: number; playing: boolean }) {
+function Picture({
+  project,
+  absTime,
+  playing,
+  proxyNonce,
+  onPrepareProxy,
+  onNudgeSync,
+  preparing,
+}: {
+  project: Project;
+  absTime: number;
+  playing: boolean;
+  proxyNonce: number;
+  onPrepareProxy: () => Promise<void>;
+  onNudgeSync: (deltaSec: number) => void;
+  preparing: boolean;
+}) {
+  const { t } = useI18n();
   const video = useRef<HTMLVideoElement>(null);
-  const [src, setSrc] = useState<string | null>(null);
+  const [proxySrc, setProxySrc] = useState<string | null>(null);
+  const [proxyLoading, setProxyLoading] = useState(true);
+  const [needsProxy, setNeedsProxy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [frame, setFrame] = useState<string | null>(null);
   const offset = project.settings.sync_offset_sec ?? project.analysis?.sync?.offset_sec ?? 0;
+  const sync = project.analysis?.sync;
+  const manual = project.settings.sync_offset_sec !== null;
   const info = project.media.video?.video;
   const ratio =
     ASPECT_RATIO[project.settings.video.aspect] ?? (info ? `${info.width} / ${info.height}` : "16 / 9");
+  const filter = STYLE_FILTER[project.settings.video.style];
+
+  const blobRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (project.sources.video) fileUrl(project.sources.video).then((u) => (u ? setSrc(u) : setFailed(true)));
-  }, [project.sources.video]);
+    setProxyLoading(true);
+    setNeedsProxy(false);
+    setFailed(false);
+    if (blobRef.current) {
+      URL.revokeObjectURL(blobRef.current);
+      blobRef.current = null;
+    }
+    setProxySrc(null);
+    let live = true;
+    api
+      .videoProxy(project.id)
+      .then((path) => {
+        if (!live) return;
+        if (!path) {
+          setNeedsProxy(!!project.sources.video && !!project.analysis);
+          setProxyLoading(false);
+          return;
+        }
+        return fileBlobUrl(path, project.updated_at).then((url) => {
+          if (!live) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          blobRef.current = url;
+          setProxySrc(url);
+          setProxyLoading(false);
+        });
+      })
+      .catch(() => {
+        if (live) {
+          setProxyLoading(false);
+          setNeedsProxy(!!project.sources.video && !!project.analysis);
+        }
+      });
+    return () => {
+      live = false;
+      if (blobRef.current) {
+        URL.revokeObjectURL(blobRef.current);
+        blobRef.current = null;
+      }
+    };
+  }, [project.id, project.updated_at, project.sources.video, project.analysis, proxyNonce]);
 
-  // Keep the video within a frame of the audio clock.
   useEffect(() => {
     const v = video.current;
-    if (!v || failed || !src) return;
-    const target = absTime + offset;
-    if (Math.abs(v.currentTime - target) > (playing ? 0.12 : 0.02)) v.currentTime = Math.max(0, target);
-    if (playing && v.paused) v.play().catch(() => {});
-    if (!playing && !v.paused) v.pause();
-  }, [absTime, offset, playing, failed, src]);
+    if (!v || !proxySrc || failed) return;
+    let id = 0;
+    const tick = () => {
+      const target = Math.max(0, absTime + offset);
+      const drift = v.currentTime - target;
+      if (!playing) {
+        v.playbackRate = 1;
+        if (Math.abs(drift) > 0.02) v.currentTime = target;
+        if (!v.paused) v.pause();
+      } else {
+        if (Math.abs(drift) > 0.2) {
+          v.currentTime = target;
+          v.playbackRate = 1;
+        } else if (Math.abs(drift) > 0.08) {
+          v.playbackRate = Math.min(1.02, Math.max(0.98, 1 - drift * 0.12));
+        } else {
+          v.playbackRate = 1;
+        }
+        if (v.paused) v.play().catch(() => {});
+      }
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, [absTime, offset, playing, proxySrc, failed]);
 
-  // Fallback when the webview cannot decode the codec (HEVC 10-bit...): stills from ffmpeg.
+  // Fallback when the proxy cannot play: stills from ffmpeg (paused scrubbing).
   useEffect(() => {
     if (!failed || playing) return;
-    const id = setTimeout(() => {
+    const tid = setTimeout(() => {
       api
         .videoFrame(project.id, absTime, 720)
         .then((p) => (p ? fileUrl(p) : null))
         .then(setFrame)
         .catch(() => {});
     }, 120);
-    return () => clearTimeout(id);
-  }, [failed, playing, absTime, project.id, offset]);
+    return () => clearTimeout(tid);
+  }, [failed, playing, absTime, project.id]);
+
+  const showPrepare = needsProxy && !proxyLoading && !!project.analysis;
 
   return (
-    <div className="flex h-full items-center justify-center">
-      <div
-        className="relative max-h-full max-w-full overflow-hidden rounded-lg bg-black shadow-xl shadow-black/40"
-        style={{ aspectRatio: ratio, height: "100%" }}
-      >
-        {!failed && src ? (
-          <video
-            ref={video}
-            src={src}
-            muted
-            playsInline
-            preload="auto"
-            onError={() => setFailed(true)}
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-        ) : frame ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={frame} alt="" className="absolute inset-0 h-full w-full object-cover" />
-        ) : (
-          <div className="absolute inset-0 grid place-items-center text-xs text-faint">
-            {fmtTime(absTime + offset)}
-          </div>
-        )}
+    <div className="grid h-full min-h-0 grid-rows-[1fr_auto] gap-2">
+      <div className="flex min-h-0 items-center justify-center">
+        <div
+          className="relative max-h-full max-w-full overflow-hidden rounded-lg bg-black shadow-xl shadow-black/40"
+          style={{ aspectRatio: ratio, height: "100%" }}
+        >
+          {proxySrc && !failed ? (
+            <video
+              ref={video}
+              src={proxySrc}
+              muted
+              playsInline
+              preload="auto"
+              onError={() => setFailed(true)}
+              style={{ filter }}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : frame ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={frame} alt="" style={{ filter }} className="absolute inset-0 h-full w-full object-cover" />
+          ) : (
+            <div className="absolute inset-0 grid place-items-center gap-3 p-4 text-center text-xs text-faint">
+              {proxyLoading ? (
+                <span>{t("video.proxyLoading")}</span>
+              ) : showPrepare ? (
+                <Button size="sm" variant="secondary" disabled={preparing || !inTauri()} onClick={() => onPrepareProxy().catch(() => {})}>
+                  {t("video.preparePreview")}
+                </Button>
+              ) : (
+                <span className="font-mono tabular-nums">{fmtTime(absTime + offset)}</span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
+      {sync && info && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 font-mono text-[11px] text-faint">
+          <span>
+            {t("sync.offset")} {offset >= 0 ? "+" : ""}
+            {offset.toFixed(2)} s · {Math.round(sync.confidence * 100)}% · {t(manual ? "sync.manual" : "sync.detected")}
+          </span>
+          <span>{sync.method !== "correlation" ? t("video.clapYes") : t("video.clapNo")}</span>
+          <span>
+            {t("video.source")} {info.width}×{info.height} @ {info.fps.toFixed(1)} {t("video.fps")} · {hdrLabel(info.hdr, t)}
+          </span>
+          <span>
+            {t("video.exportLook")} {t(`aspect.${project.settings.video.aspect}`)} · {t(`style.${project.settings.video.style}`)}
+          </span>
+          <span className="ml-auto flex gap-1">
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => onNudgeSync(-0.01)}>
+              {t("video.nudgeBack")}
+            </Button>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => onNudgeSync(0.01)}>
+              {t("video.nudgeFwd")}
+            </Button>
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -89,11 +220,19 @@ export function Preview({
   stale,
   onRender,
   onPlayhead,
+  proxyNonce,
+  onPrepareVideoProxy,
+  onNudgeSync,
+  preparingVideoProxy,
 }: {
   project: Project;
   stale: boolean;
   onRender: () => void;
   onPlayhead: (abs: number | null) => void;
+  proxyNonce: number;
+  onPrepareVideoProxy: () => Promise<void>;
+  onNudgeSync: (deltaSec: number) => void;
+  preparingVideoProxy: boolean;
 }) {
   const { t } = useI18n();
   const r = project.last_render;
@@ -208,7 +347,15 @@ export function Preview({
     <div className="grid h-full min-h-0 grid-rows-[1fr_auto] gap-4">
       <div className="min-h-0">
         {hasVideo ? (
-          <Picture project={project} absTime={(r?.start_sec ?? 0) + time} playing={playing} />
+          <Picture
+            project={project}
+            absTime={(r?.start_sec ?? 0) + time}
+            playing={playing}
+            proxyNonce={proxyNonce}
+            onPrepareProxy={onPrepareVideoProxy}
+            onNudgeSync={onNudgeSync}
+            preparing={preparingVideoProxy}
+          />
         ) : (
           <div className="grid h-full place-items-center rounded-lg border border-dashed border-line text-sm text-faint">
             {t("video.none")}

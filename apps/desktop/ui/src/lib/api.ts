@@ -30,6 +30,11 @@ export async function fileUrl(path: string): Promise<string> {
   return convertFileSrc(path);
 }
 
+/** Blob URL for a local file: WebKitGTK's GStreamer backend cannot open `asset://` media. */
+export async function fileBlobUrl(path: string, version: string): Promise<string> {
+  return URL.createObjectURL(new Blob([await fileBytes(path, version)], { type: "video/mp4" }));
+}
+
 /** Raw bytes of a local file, bypassing `<audio>` (GStreamer cannot read `asset://` on Linux). */
 export async function fileBytes(path: string, version: string): Promise<ArrayBuffer> {
   const url = await fileUrl(path);
@@ -55,6 +60,8 @@ export const api = {
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
   videoFrame: (id: string, audioSec: number, maxWidth: number) =>
     invoke<string>("video_frame", { id, audioSec, maxWidth }),
+  videoProxy: (id: string) => invoke<string | null>("video_proxy", { id }),
+  prepareVideoProxy: (id: string, job: string) => invoke<string | null>("prepare_video_proxy", { id, job }),
   defaultOutputDir: (id: string) => invoke<string>("default_output_dir", { id }),
   captionPreview: (id: string) => invoke<string>("caption_preview", { id }),
   analyze: (id: string, job: string) => invoke<Project>("analyze", { id, job }),

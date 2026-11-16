@@ -49,6 +49,8 @@ function Editor() {
   const [renderedKey, setRenderedKey] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [proxyNonce, setProxyNonce] = useState(0);
+  const preparingVideo = jobs.current?.status === "running" && jobs.current.title === t("video.preparePreview");
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const pending = useRef<Settings | null>(null);
   const started = useRef(false);
@@ -73,6 +75,32 @@ function Editor() {
     }
   }, [id]);
 
+  const prepareVideoProxy = useCallback(async () => {
+    try {
+      await jobs.run(t("video.preparePreview"), (job) => api.prepareVideoProxy(id, job));
+      setProxyNonce((n) => n + 1);
+    } catch {
+      // Shown in the job bar.
+    }
+  }, [id, jobs, t]);
+
+  const nudgeSync = useCallback(
+    (d: number) => {
+      setProject((p) => {
+        if (!p?.analysis?.sync) return p;
+        const offset = p.settings.sync_offset_sec ?? p.analysis.sync.offset_sec;
+        const settings = { ...p.settings, sync_offset_sec: Math.round((offset + d) * 1000) / 1000 };
+        pending.current = settings;
+        clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          flush().catch((e) => setError(errorMessage(e)));
+        }, 350);
+        return { ...p, settings };
+      });
+    },
+    [flush],
+  );
+
   const renderPreview = useCallback(async () => {
     try {
       await flush();
@@ -89,6 +117,7 @@ function Editor() {
       await flush();
       const p = await jobs.run(t("editor.analyze"), (job) => api.analyze(id, job));
       setProject(p);
+      setProxyNonce((n) => n + 1);
       await renderPreview();
     } catch {
       // Shown in the job bar.
@@ -194,7 +223,16 @@ function Editor() {
               />
             </section>
             <section className="min-h-0 flex-1" aria-label={t("preview.title")}>
-              <Preview project={project} stale={stale} onRender={renderPreview} onPlayhead={setPlayhead} />
+              <Preview
+                project={project}
+                stale={stale}
+                onRender={renderPreview}
+                onPlayhead={setPlayhead}
+                proxyNonce={proxyNonce}
+                onPrepareVideoProxy={prepareVideoProxy}
+                onNudgeSync={nudgeSync}
+                preparingVideoProxy={preparingVideo}
+              />
             </section>
           </div>
           <aside className="min-h-0 border-l border-line bg-panel/40">

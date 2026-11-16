@@ -234,6 +234,20 @@ async fn video_frame(
 }
 
 #[tauri::command]
+async fn video_proxy(state: State<'_, AppState>, id: String) -> CmdResult<Option<PathBuf>> {
+    blocking(state, move |e| e.video_proxy(&id)).await
+}
+
+#[tauri::command]
+async fn prepare_video_proxy(
+    app: AppHandle,
+    id: String,
+    job: String,
+) -> CmdResult<Option<PathBuf>> {
+    run_job(app, job, move |e, ctx| e.ensure_video_proxy(&id, ctx)).await
+}
+
+#[tauri::command]
 async fn caption_preview(state: State<'_, AppState>, id: String) -> CmdResult<String> {
     blocking(state, move |e| Ok(cover_engine::caption(&e.load(&id)?))).await
 }
@@ -377,6 +391,8 @@ pub fn run() {
             rename_project,
             delete_project,
             video_frame,
+            video_proxy,
+            prepare_video_proxy,
             default_output_dir,
             caption_preview,
             analyze,

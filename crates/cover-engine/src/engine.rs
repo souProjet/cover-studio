@@ -19,8 +19,8 @@ use cover_dsp::loudness::{measure, normalize};
 use cover_dsp::util::apply_fades;
 use cover_media::wav::{read_wav, write_wav, WavFormat};
 use cover_media::{
-    decode_audio, encode_audio, extract_frame, extract_preview, probe, render_video, AudioCodec,
-    MediaInfo, Tools, VideoRenderSpec,
+    decode_audio, encode_audio, extract_frame, extract_preview, probe, render_proxy, render_video,
+    AudioCodec, MediaInfo, Tools, VideoRenderSpec,
 };
 use cover_ml::gpu_runtime::{self, GpuRuntimeStatus};
 use cover_ml::{ensure_model, ModelKind, ModelSpec, PitchTrack, MODELS};
@@ -90,6 +90,16 @@ fn stems_fingerprint(sources: &Sources, settings: &Settings) -> String {
     }
     h.update(settings.separation_model.as_bytes());
     h.update([settings.denoise_separation as u8]);
+    hash_hex(h)
+}
+
+/// Bump when the preview proxy encoding changes.
+const PROXY_REVISION: u32 = 1;
+
+fn proxy_fingerprint(video: &Path) -> String {
+    let mut h = Sha256::new();
+    h.update(PROXY_REVISION.to_le_bytes());
+    file_stamp(&mut h, video);
     hash_hex(h)
 }
 
@@ -501,6 +511,12 @@ impl Engine {
         }
         p.last_render = None;
         self.save(&mut p)?;
+        // The preview falls back to still frames if this fails.
+        match self.ensure_video_proxy(id, ctx) {
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => ctx.log(format!("Video preview unavailable: {e}")),
+            Ok(_) => {}
+        }
         Ok(p)
     }
 
@@ -607,6 +623,39 @@ impl Engine {
         });
         self.save(&mut p)?;
         Ok(p)
+    }
+
+    /// Playable preview copy of the project video, if it is up to date.
+    pub fn video_proxy(&self, id: &str) -> Result<Option<PathBuf>> {
+        let p = self.load(id)?;
+        let Some(video) = p.sources.video.as_ref() else {
+            return Ok(None);
+        };
+        let cache = self.cache_dir(id);
+        let out = cache.join("proxy.mp4");
+        let fresh = std::fs::read_to_string(cache.join("proxy.fingerprint")).ok()
+            == Some(proxy_fingerprint(video));
+        Ok((fresh && out.is_file()).then_some(out))
+    }
+
+    /// Creates the preview copy of the project video when missing or stale.
+    pub fn ensure_video_proxy(&self, id: &str, ctx: &Ctx) -> Result<Option<PathBuf>> {
+        if let Some(path) = self.video_proxy(id)? {
+            return Ok(Some(path));
+        }
+        let p = self.load(id)?;
+        let Some(video) = p.sources.video.as_ref() else {
+            return Ok(None);
+        };
+        let cache = self.cache_dir(id);
+        let stamp = cache.join("proxy.fingerprint");
+        std::fs::remove_file(&stamp).ok();
+        ctx.stage(Stage::Video, "Preparing the video preview");
+        let out = render_proxy(video, &cache.join("proxy.mp4"), ctx.cancel, |f| {
+            ctx.progress(Stage::Video, f)
+        })?;
+        std::fs::write(&stamp, proxy_fingerprint(video))?;
+        Ok(Some(out))
     }
 
     /// Video frame at a master-audio time, for checking sync and picking thumbnails.

@@ -12,7 +12,8 @@ pub mod wav;
 
 pub use decode::decode_audio;
 pub use encode::{
-    encode_audio, render_video, Aspect, AudioCodec, VideoQuality, VideoRenderSpec, VideoStyle,
+    encode_audio, render_proxy, render_video, Aspect, AudioCodec, VideoQuality, VideoRenderSpec,
+    VideoStyle,
 };
 pub use frame::{extract_frame, extract_preview};
 pub use probe::{probe, AudioStreamInfo, HdrTransfer, MediaInfo, VideoStreamInfo};

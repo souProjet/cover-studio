@@ -180,7 +180,7 @@ fn video_encoder_args(quality: VideoQuality) -> Vec<String> {
 pub fn render_video(
     spec: &VideoRenderSpec,
     cancel: &AtomicBool,
-    mut on_progress: impl FnMut(f32),
+    on_progress: impl FnMut(f32),
 ) -> Result<PathBuf> {
     let tools = Tools::locate()?;
     let info = probe(&spec.video)?;
@@ -255,7 +255,141 @@ pub fn render_video(
         ])
         .arg(&tmp);
     tracing::debug!(?cmd, "render_video");
+    run_with_progress(cmd, &tmp, &spec.out, duration, cancel, on_progress)?;
+    Ok(spec.out.clone())
+}
 
+/// Lightweight H.264 copy of a phone video that any webview can play: SDR
+/// BT.709 with the export's tone mapping, short side at most 720 px, 30 fps,
+/// no audio. Keeps the source framing so the preview can crop to any aspect.
+pub fn render_proxy(
+    video: &Path,
+    out: &Path,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(f32),
+) -> Result<PathBuf> {
+    let info = probe(video)?;
+    let v = info.video.ok_or_else(|| {
+        MediaError::Unsupported(format!("{} has no video stream", video.display()))
+    })?;
+    let duration = info.duration_sec.max(0.1);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // NVDEC + GPU scaling only downloads 720p frames: ~4x faster than
+    // software decoding on 4K HEVC. Rotated sources need ffmpeg's autorotate,
+    // which runs on CPU frames.
+    let nvidia = gpu_encoder_available();
+    if nvidia && v.rotation.rem_euclid(360) == 0 {
+        match run_proxy(video, out, &v, duration, true, cancel, &mut on_progress) {
+            Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+            Err(e) => tracing::warn!("GPU proxy failed, falling back to CPU: {e}"),
+            Ok(()) => return Ok(out.to_path_buf()),
+        }
+    }
+    run_proxy(video, out, &v, duration, false, cancel, &mut on_progress)?;
+    Ok(out.to_path_buf())
+}
+
+fn run_proxy(
+    video: &Path,
+    out: &Path,
+    v: &crate::probe::VideoStreamInfo,
+    duration: f64,
+    gpu_decode: bool,
+    cancel: &AtomicBool,
+    on_progress: &mut impl FnMut(f32),
+) -> Result<()> {
+    let tools = Tools::locate()?;
+    let (w, h) = proxy_size(v.width, v.height);
+    let mut vf = if gpu_decode {
+        format!("scale_cuda={w}:{h}:format=nv12,hwdownload,format=nv12,format=yuv420p")
+    } else {
+        format!("scale={w}:{h}:flags=bicubic")
+    };
+    match v.hdr {
+        Some(HdrTransfer::Hlg) => vf.push_str(",format=yuv420p,colormatrix=bt2020:bt709"),
+        Some(HdrTransfer::Pq) if has_zscale() => {
+            vf.push(',');
+            vf.push_str(PQ_TONEMAP);
+        }
+        _ => {}
+    }
+    vf.push_str(
+        ",setsar=1,fps=30,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
+    );
+
+    let tmp = out.with_extension("part.mp4");
+    let mut cmd = tools.ffmpeg();
+    cmd.args(["-loglevel", "error", "-progress", "pipe:1", "-nostats"]);
+    if gpu_decode {
+        cmd.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]);
+    }
+    cmd.arg("-i")
+        .arg(video)
+        .args(["-map", "0:v:0", "-an", "-vf"])
+        .arg(&vf);
+    if gpu_encoder_available() {
+        cmd.args([
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p2",
+            "-rc",
+            "vbr",
+            "-cq",
+            "30",
+            "-b:v",
+            "2M",
+            "-maxrate",
+            "3M",
+            "-bufsize",
+            "6M",
+        ]);
+    } else {
+        cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]);
+    }
+    cmd.args([
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "15",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-colorspace",
+        "bt709",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+    ])
+    .arg(&tmp);
+    tracing::debug!(?cmd, "render_proxy");
+    run_with_progress(cmd, &tmp, out, duration, cancel, on_progress)
+}
+
+/// Even size with the short side at most 720 px.
+fn proxy_size(w: u32, h: u32) -> (u32, u32) {
+    let short = w.min(h).max(1) as f64;
+    let k = (720.0 / short).min(1.0);
+    let even = |v: u32| ((v as f64 * k / 2.0).round() as u32 * 2).max(2);
+    (even(w), even(h))
+}
+
+/// Runs an ffmpeg command writing to `tmp` with `-progress pipe:1`, then moves
+/// the result to `out`.
+fn run_with_progress(
+    mut cmd: std::process::Command,
+    tmp: &Path,
+    out: &Path,
+    duration: f64,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(f32),
+) -> Result<()> {
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
@@ -269,7 +403,7 @@ pub fn render_video(
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(tmp);
             return Err(MediaError::Cancelled);
         }
         if let Some(us) = line.strip_prefix("out_time_us=") {
@@ -281,15 +415,15 @@ pub fn render_video(
     let status = child.wait()?;
     let stderr = err_reader.join().unwrap_or_default();
     if !status.success() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err(MediaError::ToolFailed {
             tool: "ffmpeg",
             message: stderr_tail(&stderr),
         });
     }
-    std::fs::rename(&tmp, &spec.out)?;
+    std::fs::rename(tmp, out)?;
     on_progress(1.0);
-    Ok(spec.out.clone())
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

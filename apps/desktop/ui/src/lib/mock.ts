@@ -104,6 +104,7 @@ function demoProject(): Project {
 }
 
 let project: Project | null = null;
+let demoVideoProxy = false;
 const getProject = () => (project ??= demoProject());
 
 const system: SystemInfo = {
@@ -246,6 +247,12 @@ export async function mockInvoke<T>(cmd: string, args: Record<string, unknown>):
       return "~/Musique/Cover Studio/mockingbird" as T;
     case "video_frame":
       return "" as T;
+    case "video_proxy":
+      return (demoVideoProxy ? "/demo/proxy.mp4" : null) as T;
+    case "prepare_video_proxy":
+      await simulate(job, [["video", "Preparing the video preview"]], 1200);
+      demoVideoProxy = true;
+      return "/demo/proxy.mp4" as T;
     case "analyze":
       await simulate(job, [
         ["separate", "Separating voice and instrument"],
