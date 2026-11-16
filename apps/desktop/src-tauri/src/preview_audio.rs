@@ -75,6 +75,9 @@ impl PreviewAudio {
     /// Decodes both versions; a newer `load` started meanwhile wins.
     pub fn load(&self, studio: &Path, original: &Path) -> Result<f64, String> {
         let generation = self.shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.shared.playing.store(false, Ordering::SeqCst);
+        self.shared.pos.store(0, Ordering::SeqCst);
+        *self.shared.track.lock().unwrap() = None;
         let decode = |p: &Path| {
             cover_engine::media::decode_audio(p, self.rate, Some(2))
                 .map(|b| b.interleaved())
@@ -87,8 +90,6 @@ impl PreviewAudio {
         if self.shared.generation.load(Ordering::SeqCst) != generation {
             return Err("superseded by a newer preview".into());
         }
-        self.shared.playing.store(false, Ordering::SeqCst);
-        self.shared.pos.store(0, Ordering::SeqCst);
         *track = Some(Arc::new(Track { a, b, frames }));
         Ok(frames as f64 / self.rate as f64)
     }

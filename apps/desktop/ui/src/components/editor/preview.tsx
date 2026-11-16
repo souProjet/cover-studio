@@ -84,7 +84,7 @@ function Picture({
           setProxyLoading(false);
           return;
         }
-        return fileBlobUrl(path, project.updated_at).then((url) => {
+        return fileBlobUrl(path, String(proxyNonce)).then((url) => {
           if (!live) {
             URL.revokeObjectURL(url);
             return;
@@ -107,11 +107,18 @@ function Picture({
         blobRef.current = null;
       }
     };
-  }, [project.id, project.updated_at, project.sources.video, project.analysis, proxyNonce]);
+  }, [project.id, project.sources.video, project.analysis, proxyNonce]);
 
   useEffect(() => {
     const v = video.current;
     if (!v || !proxySrc || failed) return;
+    if (!playing) {
+      const target = Math.max(0, absTime + offset);
+      v.playbackRate = 1;
+      if (Math.abs(v.currentTime - target) > 0.02) v.currentTime = target;
+      if (!v.paused) v.pause();
+      return;
+    }
     let id = 0;
     const tick = () => {
       const target = Math.max(0, absTime + offset);
@@ -165,7 +172,7 @@ function Picture({
               src={proxySrc}
               muted
               playsInline
-              preload="auto"
+              preload="metadata"
               onError={() => setFailed(true)}
               style={{ filter }}
               className="absolute inset-0 h-full w-full object-cover"
@@ -250,6 +257,8 @@ export function Preview({
     setTime(0);
     setPlayError(null);
     setReady(false);
+    player.current?.dispose();
+    player.current = null;
     if (!r) return;
     let live = true;
     let loaded: PreviewPlayer | null = null;
