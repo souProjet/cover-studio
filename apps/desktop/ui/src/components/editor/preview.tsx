@@ -2,19 +2,13 @@
 
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, fileUrl, mediaUrl, releaseMediaUrl } from "@/lib/api";
+import { AbPlayer } from "@/lib/ab-player";
+import { api, fileBytes, fileUrl } from "@/lib/api";
 import { type TKey, useI18n } from "@/lib/i18n";
 import type { Aspect, Project } from "@/lib/types";
 import { cn, errorMessage, fmtTime } from "@/lib/utils";
 import { Button } from "../ui";
 import { WaveCanvas } from "./wave-canvas";
-
-const MEDIA_ERRORS: Record<number, string> = {
-  1: "MEDIA_ERR_ABORTED",
-  2: "MEDIA_ERR_NETWORK",
-  3: "MEDIA_ERR_DECODE",
-  4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
-};
 
 const ASPECT_RATIO: Record<Aspect, string | null> = {
   vertical: "9 / 16",
@@ -103,9 +97,8 @@ export function Preview({
 }) {
   const { t } = useI18n();
   const r = project.last_render;
-  const studio = useRef<HTMLAudioElement>(null);
-  const original = useRef<HTMLAudioElement>(null);
-  const [urls, setUrls] = useState<[string, string] | null>(null);
+  const player = useRef<AbPlayer | null>(null);
+  const [ready, setReady] = useState(false);
   const [ab, setAb] = useState<"studio" | "original">("studio");
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -116,51 +109,46 @@ export function Preview({
     setPlaying(false);
     setTime(0);
     setPlayError(null);
-    setUrls(null);
+    setReady(false);
     if (!r) return;
     let live = true;
-    let loaded: [string, string] | null = null;
-    Promise.all([mediaUrl(r.processed, r.at), mediaUrl(r.original, r.at)])
-      .then((u) => {
-        if (live) setUrls((loaded = u));
-        else u.forEach(releaseMediaUrl);
+    let loaded: AbPlayer | null = null;
+    Promise.all([fileBytes(r.processed, r.at), fileBytes(r.original, r.at)])
+      .then(([a, b]) => AbPlayer.load(a, b))
+      .then((p) => {
+        if (!live) return p.dispose();
+        loaded = player.current = p;
+        p.onEnded = () => {
+          setPlaying(false);
+          setTime(0);
+        };
+        setReady(true);
       })
-      .catch((e) => live && setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
+      .catch((e) => {
+        if (!live) return;
+        const decode = e instanceof DOMException && e.name === "EncodingError";
+        setPlayError({ key: decode ? "preview.unsupported" : "preview.playFailed", detail: errorMessage(e) });
+      });
     return () => {
       live = false;
-      loaded?.forEach(releaseMediaUrl);
+      loaded?.dispose();
+      if (player.current === loaded) player.current = null;
     };
   }, [r]);
 
-  function mediaError(el: HTMLAudioElement) {
-    const err = el.error;
-    setPlaying(false);
-    setPlayError({
-      key: err?.code === 4 ? "preview.unsupported" : "preview.playFailed",
-      detail: err ? `${MEDIA_ERRORS[err.code] ?? err.code}${err.message ? `: ${err.message}` : ""}` : undefined,
-    });
-  }
-
   useEffect(() => {
-    if (studio.current) studio.current.muted = ab !== "studio";
-    if (original.current) original.current.muted = ab !== "original";
-  }, [ab, urls]);
+    player.current?.setSide(ab === "studio" ? "a" : "b");
+  }, [ab, ready]);
 
   useEffect(() => {
     onPlayhead(r ? r.start_sec + time : null);
   }, [time, r, onPlayhead]);
 
-  // Both versions run together; the switch only changes which one is heard.
   useEffect(() => {
     if (!playing) return;
     let raf = 0;
     const tick = () => {
-      const a = studio.current;
-      const b = original.current;
-      if (a && b) {
-        setTime(a.currentTime);
-        if (Math.abs(a.currentTime - b.currentTime) > 0.03) b.currentTime = a.currentTime;
-      }
+      if (player.current) setTime(player.current.time);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -168,39 +156,30 @@ export function Preview({
   }, [playing]);
 
   function toggle() {
-    const a = studio.current;
-    const b = original.current;
-    if (!a || !b) {
-      if (r) setPlayError({ key: "preview.notReady" });
+    const p = player.current;
+    if (!p) {
+      if (r && !playError) setPlayError({ key: "preview.notReady" });
       return;
     }
-    if (playing) {
-      a.pause();
-      b.pause();
+    if (p.playing) {
+      p.pause();
+      setTime(p.time);
       setPlaying(false);
-    } else {
-      b.currentTime = a.currentTime;
-      Promise.all([a.play(), b.play()])
-        .then(() => {
-          setPlayError(null);
-          setPlaying(true);
-        })
-        .catch((e) => {
-          a.pause();
-          b.pause();
-          setPlaying(false);
-          if (a.error) return mediaError(a);
-          if (b.error) return mediaError(b);
-          setPlayError({ key: "preview.playFailed", detail: errorMessage(e) });
-        });
+      return;
     }
+    p.play()
+      .then(() => {
+        setPlayError(null);
+        setPlaying(true);
+      })
+      .catch((e) => setPlayError({ key: "preview.playFailed", detail: errorMessage(e) }));
   }
 
   function seek(e: React.PointerEvent) {
     if (!r || !wave.current) return;
     const rect = wave.current.getBoundingClientRect();
     const tt = ((e.clientX - rect.left) / rect.width) * (r.end_sec - r.start_sec);
-    for (const el of [studio.current, original.current]) if (el) el.currentTime = tt;
+    player.current?.seek(tt);
     setTime(tt);
   }
 
@@ -233,18 +212,6 @@ export function Preview({
       </div>
 
       <div className="panel p-4">
-        {urls && (
-          <>
-            <audio
-              ref={studio}
-              src={urls[0]}
-              preload="auto"
-              onEnded={() => setPlaying(false)}
-              onError={(e) => mediaError(e.currentTarget)}
-            />
-            <audio ref={original} src={urls[1]} preload="auto" muted onError={(e) => mediaError(e.currentTarget)} />
-          </>
-        )}
         <div className="flex items-center gap-3">
           <Button
             variant="primary"
